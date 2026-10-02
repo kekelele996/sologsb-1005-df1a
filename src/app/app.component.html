@@ -49,12 +49,16 @@
     <section class="main-panel" *ngIf="selectedClaim as claim">
       <div class="page-heading">
         <div><span class="eyebrow">案件 CN-2026-0917</span><h1>{{ claim.title }}</h1><p>独立项与从属项在同一视图中完成拆解、引用和支持映射。</p></div>
-        <div class="status-stack"><span class="status-chip ready">本地草稿</span><span class="updated">所有编辑实时持久化</span></div>
+        <div class="status-stack">
+          <span class="status-chip ready">本地草稿</span>
+          <span class="updated">说明书 {{ state.specification.version }} · {{ state.specification.paragraphs.length }} 段</span>
+        </div>
       </div>
 
       <nav class="tabs" aria-label="工作台视图">
         <button [class.active]="state.activeTab === 'mapping'" (click)="service.setTab('mapping')"><i class="pi pi-sitemap"></i>特征映射</button>
         <button [class.active]="state.activeTab === 'claim'" (click)="service.setTab('claim')"><i class="pi pi-file-edit"></i>权利要求录入</button>
+        <button [class.active]="state.activeTab === 'spec'" (click)="service.setTab('spec')"><i class="pi pi-book"></i>说明书版本</button>
         <button [class.active]="state.activeTab === 'compare'" (click)="service.setTab('compare')"><i class="pi pi-arrows-h"></i>版本比较</button>
         <button [class.active]="state.activeTab === 'audit'" (click)="service.setTab('audit')"><i class="pi pi-check-square"></i>核对清单</button>
       </nav>
@@ -105,29 +109,55 @@
           <ng-template #noFeature><section class="panel empty-state large">请选择一个技术特征进行编辑。</section></ng-template>
 
           <section class="panel support-panel">
-            <div class="panel-heading"><span>说明书支持依据</span><span class="heading-actions"><p-badge [value]="selectedFeature?.supportIds?.length || 0" severity="success" /><p-button label="新增段落" icon="pi pi-plus" size="small" [disabled]="!canEditMainData" (onClick)="service.addParagraph()" /></span></div>
-            <p class="hint">选择段落即建立映射；取消选择会移除映射。只有至少一个段落时可消除“缺少依据”。</p>
-            <article *ngFor="let paragraph of state.paragraphs" class="paragraph-card" [class.mapped]="selectedFeature && isMapped(selectedFeature, paragraph.id)">
+            <div class="panel-heading">
+              <span>说明书支持依据</span>
+              <span class="heading-actions">
+                <p-badge [value]="selectedFeature?.supportIds?.length || 0" severity="success" />
+                <p-button label="新增段落" icon="pi pi-plus" size="small" [disabled]="!canEditMainData" (onClick)="service.addParagraph()" pTooltip="在客户侧说明书中新增段落" />
+              </span>
+            </div>
+            <p class="hint">段落正文与编号由客户侧持有，此处只读引用。换版后按段落锚点迁移映射，对不上的先挂起。</p>
+            <article *ngFor="let paragraph of state.specification.paragraphs" class="paragraph-card" [class.mapped]="selectedFeature && isMapped(selectedFeature, paragraph.id)" [class.review-flagged]="selectedFeature && isReviewFlagged(selectedFeature.id, paragraph.id)">
               <label>
                 <input type="checkbox" [checked]="selectedFeature && isMapped(selectedFeature, paragraph.id)" [disabled]="!selectedFeature || !canEditMainData" (change)="selectedFeature && service.toggleParagraphMapping(selectedFeature.id, paragraph.id)">
-                <span class="paragraph-label">{{ paragraph.section }}</span>
+                <span class="paragraph-label">{{ paragraph.number }}</span>
+                <span *ngIf="selectedFeature && isReviewFlagged(selectedFeature.id, paragraph.id)" class="review-badge">退回重核</span>
               </label>
-              <div *ngIf="canEditMainData" class="paragraph-editor">
-                <input pInputText [value]="paragraph.section" aria-label="说明书段落编号" (change)="service.updateParagraph(paragraph.id, { section: $any($event.target).value })">
-                <textarea pTextarea rows="3" [value]="paragraph.text" aria-label="说明书段落正文" (change)="service.updateParagraph(paragraph.id, { text: $any($event.target).value })"></textarea>
-                <p-button label="删除段落" icon="pi pi-trash" severity="danger" [text]="true" size="small" (onClick)="service.deleteParagraph(paragraph.id)" />
+              <p>{{ paragraph.text }}</p>
+              <div *ngIf="selectedFeature && isReviewFlagged(selectedFeature.id, paragraph.id)" class="review-actions">
+                <small>该段落正文已更新而特征正文未变动，请确认是否仍支持。</small>
+                <p-button label="确认仍支持" size="small" severity="success" [outlined]="true" (onClick)="selectedFeature && service.confirmReview(selectedFeature.id, paragraph.id)"></p-button>
+                <p-button label="移除映射" size="small" severity="danger" [text]="true" (onClick)="selectedFeature && service.dismissReview(selectedFeature.id, paragraph.id)"></p-button>
               </div>
-              <p *ngIf="!canEditMainData">{{ paragraph.text }}</p>
             </article>
+            <div *ngIf="!state.specification.paragraphs.length" class="empty-state">说明书暂无段落，可到「说明书版本」页签导入新版。</div>
           </section>
         </div>
 
         <div class="mapping-summary">
           <div><span>特征覆盖</span><strong>{{ claimFeatures.length }}</strong></div>
           <div><span>已建立依据</span><strong>{{ mappedFeatureCount }}</strong></div>
-          <div><span>待清理映射</span><strong>{{ state.orphanMappings.length }}</strong></div>
-          <div><span>批注总数</span><strong>{{ state.annotations.length }}</strong></div>
+          <div><span>退回重核</span><strong [class.warn-text]="reviewCount">{{ reviewCount }}</strong></div>
+          <div><span>挂起映射</span><strong [class.warn-text]="suspendedCount">{{ suspendedCount }}</strong></div>
         </div>
+
+        <section class="panel suspended-panel" *ngIf="state.suspendedMappings.length">
+          <div class="panel-heading"><span>挂起的支持映射（等待人工确认）</span><p-badge [value]="state.suspendedMappings.length" severity="warn" /></div>
+          <p class="hint">换版后以下映射在新版说明书中找不到对应段落，已挂起且不指向任何新段落。请重新挂接到新版段落，或丢弃。</p>
+          <div class="suspended-row" *ngFor="let suspended of state.suspendedMappings">
+            <div class="suspended-info">
+              <strong>{{ suspended.featureLabel }}</strong>
+              <small>旧段落 {{ suspended.paragraphNumber }} · {{ suspended.paragraphText | slice:0:40 }}{{ suspended.paragraphText.length > 40 ? '…' : '' }}</small>
+            </div>
+            <div class="suspended-actions">
+              <select (change)="relinkSuspended(suspended.id, $event)" [disabled]="!canEditMainData">
+                <option value="">重新挂接到新版段落…</option>
+                <option *ngFor="let paragraph of state.specification.paragraphs" [value]="paragraph.id">{{ paragraph.number }} · {{ paragraph.text | slice:0:20 }}</option>
+              </select>
+              <p-button label="丢弃" size="small" severity="danger" [text]="true" (onClick)="service.discardSuspended(suspended.id)"></p-button>
+            </div>
+          </div>
+        </section>
 
         <section class="panel annotation-panel" *ngIf="selectedFeature as feature">
           <div class="panel-heading"><span>特征批注</span><span class="permission-note"><i class="pi pi-lock"></i>仅可编辑本人批注</span></div>
@@ -156,6 +186,57 @@
           </div>
           <label>正文<textarea pTextarea rows="12" [value]="claim.text" (change)="updateClaimField('text', $event)" [disabled]="!canEditMainData"></textarea></label>
           <div class="edit-note"><i class="pi pi-info-circle"></i>特征拆分不会丢失原文。修改权利要求后，请重新检查特征覆盖和引用关系。</div>
+        </section>
+      </div>
+
+      <div class="view" *ngIf="state.activeTab === 'spec'">
+        <section class="panel spec-panel">
+          <div class="panel-heading">
+            <span>说明书版本（客户侧）</span>
+            <span class="heading-actions">
+              <span class="status-chip ready">当前 {{ state.specification.version }} · {{ state.specification.label }}</span>
+              <p-badge [value]="state.specification.paragraphs.length" severity="secondary" />
+            </span>
+          </div>
+          <p class="hint">说明书正文与段落编号由客户侧持有；工作台只按段落锚点引用。换版时按锚点迁移映射，对不上的先挂起等人确认，绝不指向新版里没有的段落。</p>
+
+          <div class="spec-paragraphs">
+            <article *ngFor="let paragraph of state.specification.paragraphs" class="spec-para">
+              <div class="spec-para-head">
+                <input pInputText [value]="paragraph.number" aria-label="段落编号" (change)="service.updateParagraph(paragraph.id, { number: $any($event.target).value })" [disabled]="!canEditMainData">
+                <code class="para-anchor">锚点 {{ paragraph.id }}</code>
+                <p-button label="删除" icon="pi pi-trash" severity="danger" [text]="true" size="small" [disabled]="!canEditMainData" (onClick)="service.deleteParagraph(paragraph.id)"></p-button>
+              </div>
+              <textarea pTextarea rows="3" [value]="paragraph.text" aria-label="说明书段落正文" (change)="service.updateParagraph(paragraph.id, { text: $any($event.target).value })" [disabled]="!canEditMainData"></textarea>
+            </article>
+            <div *ngIf="!state.specification.paragraphs.length" class="empty-state">说明书暂无段落。</div>
+          </div>
+          <div class="button-row">
+            <p-button label="新增段落" icon="pi pi-plus" severity="secondary" [outlined]="true" [disabled]="!canEditMainData" (onClick)="service.addParagraph()"></p-button>
+          </div>
+
+          <div class="import-area">
+            <h3>导入新版说明书（客户来稿）</h3>
+            <p class="hint">粘贴新版说明书 JSON（段落数组或含 paragraphs 的对象）。导入后按段落锚点迁移支持映射；解析失败不影响当前数据，可修正后重试。</p>
+            <textarea pTextarea rows="8" [(ngModel)]="importText" placeholder='例如：{ "version": "v2", "paragraphs": [ { "id": "para-0012", "number": "[0013]", "text": "…" } ] }'></textarea>
+            <div class="button-row">
+              <p-button label="导入新版并迁移映射" icon="pi pi-upload" (onClick)="importSpec()" [disabled]="!importText.trim()"></p-button>
+              <p-button label="填入示例新版" icon="pi pi-magic" severity="secondary" [outlined]="true" (onClick)="fillSampleImport()"></p-button>
+            </div>
+            <p *ngIf="importError" class="feedback error-text"><i class="pi pi-times-circle"></i>{{ importError }}</p>
+            <p *ngIf="importResult" class="feedback success-text"><i class="pi pi-check-circle"></i>{{ importResult }}</p>
+          </div>
+
+          <div class="spec-drafts" *ngIf="state.specDrafts.length">
+            <h3>客户旧稿（照旧能翻）</h3>
+            <div class="draft-row" *ngFor="let draft of state.specDrafts; let i = index">
+              <span><strong>{{ draft.label || draft.version }}</strong><small>{{ draft.version }} · {{ draft.paragraphs.length }} 段 · {{ draft.updatedAt | date:'yyyy-MM-dd HH:mm' }}</small></span>
+              <span class="heading-actions">
+                <p-button label="翻阅" icon="pi pi-eye" size="small" severity="secondary" [outlined]="true" (onClick)="viewDraft(i)"></p-button>
+                <p-button label="丢弃" icon="pi pi-trash" size="small" severity="danger" [text]="true" (onClick)="discardDraft(i)"></p-button>
+              </span>
+            </div>
+          </div>
         </section>
       </div>
 
@@ -199,6 +280,29 @@
             <h3>已删除特征遗留的映射</h3>
             <div class="orphan-row" *ngFor="let orphan of state.orphanMappings"><span>{{ orphan.reason }} 对应 {{ paragraphLabel(orphan.paragraphId) }}</span><p-button label="清理" size="small" severity="warn" (onClick)="service.clearOrphan(orphan.id)" /></div>
           </div>
+          <div class="orphan-area review-area" *ngIf="state.reviewMappings.length">
+            <h3>退回重核的支持映射</h3>
+            <div class="orphan-row" *ngFor="let review of state.reviewMappings">
+              <span>{{ review.reason }}</span>
+              <span class="heading-actions">
+                <p-button label="确认仍支持" size="small" severity="success" [outlined]="true" (onClick)="service.confirmReview(review.featureId, review.anchorId)"></p-button>
+                <p-button label="移除映射" size="small" severity="danger" [text]="true" (onClick)="service.dismissReview(review.featureId, review.anchorId)"></p-button>
+              </span>
+            </div>
+          </div>
+          <div class="orphan-area suspended-area" *ngIf="state.suspendedMappings.length">
+            <h3>挂起的支持映射</h3>
+            <div class="orphan-row" *ngFor="let suspended of state.suspendedMappings">
+              <span>{{ suspended.reason }}</span>
+              <span class="heading-actions">
+                <select (change)="relinkSuspended(suspended.id, $event)" [disabled]="!canEditMainData">
+                  <option value="">重新挂接…</option>
+                  <option *ngFor="let paragraph of state.specification.paragraphs" [value]="paragraph.id">{{ paragraph.number }}</option>
+                </select>
+                <p-button label="丢弃" size="small" severity="danger" [text]="true" (onClick)="service.discardSuspended(suspended.id)"></p-button>
+              </span>
+            </div>
+          </div>
         </section>
       </div>
     </section>
@@ -214,10 +318,11 @@
           <dt>父级</dt><dd>{{ feature.parentId ? featureLabel(feature.parentId) : '顶层特征' }}</dd>
           <dt>引用</dt><dd>{{ feature.referenceIds.length }} 个特征</dd>
           <dt>批注</dt><dd>{{ featureAnnotations.length }} 条</dd>
+          <dt>重核</dt><dd><span *ngIf="reviewCountFor(feature.id)">{{ reviewCountFor(feature.id) }} 条待重核</span><span *ngIf="!reviewCountFor(feature.id)">无</span></dd>
         </dl>
         <div class="quick-map">
           <strong>支持映射</strong>
-          <span *ngFor="let id of feature.supportIds">{{ paragraphLabel(id) }}</span>
+          <span *ngFor="let id of feature.supportIds" [class.review-chip]="isReviewFlagged(feature.id, id)">{{ paragraphLabel(id) }}<em *ngIf="isReviewFlagged(feature.id, id)">重核</em></span>
           <em *ngIf="!feature.supportIds.length">尚未选择说明书段落</em>
         </div>
       </section>
@@ -230,7 +335,7 @@
       </section>
       <section class="panel rule-card">
         <i class="pi pi-shield"></i>
-        <div><strong>批注权限隔离</strong><p>当前用户不能修改其他角色创建的批注，输入框保持只读。</p></div>
+        <div><strong>两侧数据隔离</strong><p>说明书正文与段落编号由客户侧持有，权利要求、技术特征与支持映射由工作台侧持有；换版按段落锚点迁移，挂起映射绝不指向新版中没有的段落。</p></div>
       </section>
     </aside>
   </main>
@@ -253,4 +358,15 @@
     <p>{{ issue.detail }}</p>
   </div>
   <ng-template pTemplate="footer"><p-button label="关闭" (onClick)="closeIssue()" /></ng-template>
+</p-dialog>
+
+<p-dialog header="客户旧稿翻阅" [visible]="!!viewingDraft" (visibleChange)="!$event && (viewingDraft = null)" [modal]="true" [style]="{ width: '640px' }">
+  <div class="dialog-body" *ngIf="viewingDraft as draft">
+    <p>{{ draft.version }} · {{ draft.label }} · {{ draft.paragraphs.length }} 段 · {{ draft.updatedAt | date:'yyyy-MM-dd HH:mm' }}</p>
+    <article *ngFor="let paragraph of draft.paragraphs" class="draft-para">
+      <strong>{{ paragraph.number }}</strong>
+      <p>{{ paragraph.text }}</p>
+    </article>
+  </div>
+  <ng-template pTemplate="footer"><p-button label="关闭" (onClick)="viewingDraft = null" /></ng-template>
 </p-dialog>
